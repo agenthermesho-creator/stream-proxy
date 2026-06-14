@@ -9,6 +9,7 @@ from datetime import datetime
 app = Flask(__name__, static_folder="static", static_url_path="")
 
 TARGET = "https://fifaworldcup.cfd"
+R2_BASE = "https://pub-e58dbb8fb8d744a1a664e49157be4c1b.r2.dev"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 PASSWORD = os.environ.get("PASSWORD", "")
 AUTH_ENABLED = bool(PASSWORD)
@@ -44,18 +45,17 @@ def health():
     return {"ok": True, "time": datetime.utcnow().isoformat()}
 
 
-@app.route("/proxy/<path:subpath>")
+@app.route("/proxy/api/stream")
 @require_auth
-def proxy(subpath):
-    target_url = f"{TARGET}/{subpath}"
-    qs = request.query_string.decode()
-    if qs:
-        target_url += f"?{qs}"
+def proxy_stream():
+    """Fetch the HLS playlist from FWC API and rewrite R2 segment URLs."""
+    quality = request.args.get("q", "hd")
+    target_url = f"{TARGET}/api/stream?q={quality}"
 
     headers = {
         "User-Agent": UA,
-        "Referer": f"{TARGET}/",
-        "Origin": f"{TARGET}",
+        "Referer": f"{TARGET}/watch",
+        "Origin": TARGET,
     }
 
     try:
@@ -63,15 +63,14 @@ def proxy(subpath):
         content_type = resp.headers.get("Content-Type", "application/octet-stream")
         body = resp.content
 
-        # Rewrite absolute segment paths inside .m3u8 to stay within /proxy/
-        if "mpegurl" in content_type or subpath.endswith(".m3u8"):
-            text = body.decode("utf-8", errors="replace")
-            text = re.sub(
-                r"^(/[a-z]+/.*\.\w+)$",
-                r"/proxy\1",
-                text, flags=re.MULTILINE
-            )
-            body = text.encode("utf-8")
+        if resp.status_code != 200:
+            return Response(body, status=resp.status_code,
+                           content_type=content_type)
+
+        # Rewrite R2 absolute URLs to stay within proxy
+        text = body.decode("utf-8", errors="replace")
+        text = text.replace(R2_BASE, "/proxy/r2")
+        body = text.encode("utf-8")
 
         excluded = {"content-encoding", "transfer-encoding", "connection"}
         response_headers = {
@@ -79,9 +78,41 @@ def proxy(subpath):
             if k.lower() not in excluded
         }
         response_headers["Access-Control-Allow-Origin"] = "*"
-        response_headers["Cache-Control"] = resp.headers.get(
-            "Cache-Control", "no-cache"
-        )
+        response_headers["Cache-Control"] = "no-cache"
+
+        return Response(body, status=resp.status_code,
+                       headers=response_headers, content_type=content_type)
+
+    except Exception as e:
+        return Response(f"Proxy error: {e}", status=502)
+
+
+@app.route("/proxy/r2/<path:subpath>")
+@require_auth
+def proxy_r2(subpath):
+    """Proxy TS segments from Cloudflare R2."""
+    target_url = f"{R2_BASE}/{subpath}"
+    qs = request.query_string.decode()
+    if qs:
+        target_url += f"?{qs}"
+
+    headers = {
+        "User-Agent": UA,
+        "Referer": TARGET,
+    }
+
+    try:
+        resp = requests.get(target_url, headers=headers, stream=True, timeout=30)
+        content_type = resp.headers.get("Content-Type", "application/octet-stream")
+        body = resp.content
+
+        excluded = {"content-encoding", "transfer-encoding", "connection"}
+        response_headers = {
+            k: v for k, v in resp.headers.items()
+            if k.lower() not in excluded
+        }
+        response_headers["Access-Control-Allow-Origin"] = "*"
+        response_headers["Cache-Control"] = "public, max-age=31536000"
 
         return Response(body, status=resp.status_code,
                        headers=response_headers, content_type=content_type)

@@ -28,7 +28,7 @@
 videojs('video', {
   liveui: true,
   html5: { hls: { overrideNative: true, enableLowLatency: true } },
-  sources: [{ src: 'proxy/live/stream.m3u8', type: 'application/x-mpegURL' }]
+  sources: [{ src: 'proxy/api/stream?q=hd', type: 'application/x-mpegURL' }]
 });
 </script>
 </body>
