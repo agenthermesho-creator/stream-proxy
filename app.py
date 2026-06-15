@@ -49,7 +49,7 @@ def health():
 @require_auth
 def proxy_stream():
     """Fetch the HLS playlist from FWC API and rewrite R2 segment URLs."""
-    quality = request.args.get("q", "hd")
+    quality = request.args.get("q", "4k")
     target_url = f"{TARGET}/api/stream?q={quality}"
 
     headers = {
