@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FWC TV — World Cup 2026</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>⚽ Saudi Arabia vs Uruguay — World Cup 2026</title>
 <link href="https://vjs.zencdn.net/8.16.1/video-js.css" rel="stylesheet">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -25,10 +25,20 @@
 </div>
 <script src="https://vjs.zencdn.net/8.16.1/video.min.js"></script>
 <script>
+// The master playlist URL — proxied through our server
+var PLAYLIST = '/proxy?url=' + encodeURIComponent('https://chatgpt.hereisman.net/playlist/52063/load-playlist');
+
 videojs('video', {
   liveui: true,
-  html5: { hls: { overrideNative: true, enableLowLatency: true } },
-  sources: [{ src: 'proxy/api/stream?q=4k', type: 'application/x-mpegURL' }]
+  html5: {
+    hls: {
+      overrideNative: true,
+      enableLowLatency: true,
+      smoothQualityChange: true,
+      handlePartialData: true
+    }
+  },
+  sources: [{ src: PLAYLIST, type: 'application/x-mpegURL' }]
 });
 </script>
 </body>

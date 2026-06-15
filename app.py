@@ -1,16 +1,18 @@
-"""Stream proxy - FWC TV World Cup 2026"""
+"""Stream proxy — generic URL proxy for HLS streams"""
 import os
 import re
 import requests
 from functools import wraps
 from flask import Flask, request, Response, send_from_directory
 from datetime import datetime
+from urllib.parse import quote, unquote
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
-TARGET = "https://fifaworldcup.cfd"
-R2_BASE = "https://pub-e58dbb8fb8d744a1a664e49157be4c1b.r2.dev"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+# The playlist server requires this specific Referer
+REFERER = "https://gooz.aapmains.net/"
+ORIGIN = "https://gooz.aapmains.net"
 PASSWORD = os.environ.get("PASSWORD", "")
 AUTH_ENABLED = bool(PASSWORD)
 
@@ -45,17 +47,24 @@ def health():
     return {"ok": True, "time": datetime.utcnow().isoformat()}
 
 
-@app.route("/proxy/api/stream")
+@app.route("/proxy")
 @require_auth
-def proxy_stream():
-    """Fetch the HLS playlist from FWC API and rewrite R2 segment URLs."""
-    quality = request.args.get("q", "4k")
-    target_url = f"{TARGET}/api/stream?q={quality}"
+def proxy():
+    """Generic proxy: /proxy?url=<encoded_url>
+
+    Fetches any URL with proper headers and rewrites m3u8 playlists
+    so all segment URLs route back through this proxy.
+    """
+    target_url = request.args.get("url")
+    if not target_url:
+        return Response("Missing url param", 400)
+
+    target_url = unquote(target_url)
 
     headers = {
         "User-Agent": UA,
-        "Referer": f"{TARGET}/watch",
-        "Origin": TARGET,
+        "Referer": REFERER,
+        "Origin": ORIGIN,
     }
 
     try:
@@ -63,14 +72,26 @@ def proxy_stream():
         content_type = resp.headers.get("Content-Type", "application/octet-stream")
         body = resp.content
 
-        if resp.status_code != 200:
-            return Response(body, status=resp.status_code,
-                           content_type=content_type)
+        # Rewrite m3u8 playlists to route segments through proxy
+        is_playlist = (
+            "mpegurl" in content_type
+            or target_url.endswith(".m3u8")
+            or body[:30].strip().startswith(b"#EXTM3U")
+        )
 
-        # Rewrite R2 absolute URLs to stay within proxy
-        text = body.decode("utf-8", errors="replace")
-        text = text.replace(R2_BASE, "/proxy/r2")
-        body = text.encode("utf-8")
+        if is_playlist:
+            text = body.decode("utf-8", errors="replace")
+
+            def rewrite_url(match):
+                url = match.group(0)
+                # Don't double-proxy our own URLs
+                if "stream-proxy" in url or "localhost" in url:
+                    return url
+                return f"/proxy?url={quote(url, safe='')}"
+
+            text = re.sub(r"https?://[^\s\r\n]+", rewrite_url, text)
+            body = text.encode("utf-8")
+            content_type = "application/vnd.apple.mpegurl"
 
         excluded = {"content-encoding", "transfer-encoding", "connection"}
         response_headers = {
@@ -79,40 +100,6 @@ def proxy_stream():
         }
         response_headers["Access-Control-Allow-Origin"] = "*"
         response_headers["Cache-Control"] = "no-cache"
-
-        return Response(body, status=resp.status_code,
-                       headers=response_headers, content_type=content_type)
-
-    except Exception as e:
-        return Response(f"Proxy error: {e}", status=502)
-
-
-@app.route("/proxy/r2/<path:subpath>")
-@require_auth
-def proxy_r2(subpath):
-    """Proxy TS segments from Cloudflare R2."""
-    target_url = f"{R2_BASE}/{subpath}"
-    qs = request.query_string.decode()
-    if qs:
-        target_url += f"?{qs}"
-
-    headers = {
-        "User-Agent": UA,
-        "Referer": TARGET,
-    }
-
-    try:
-        resp = requests.get(target_url, headers=headers, stream=True, timeout=30)
-        content_type = resp.headers.get("Content-Type", "application/octet-stream")
-        body = resp.content
-
-        excluded = {"content-encoding", "transfer-encoding", "connection"}
-        response_headers = {
-            k: v for k, v in resp.headers.items()
-            if k.lower() not in excluded
-        }
-        response_headers["Access-Control-Allow-Origin"] = "*"
-        response_headers["Cache-Control"] = "public, max-age=31536000"
 
         return Response(body, status=resp.status_code,
                        headers=response_headers, content_type=content_type)
