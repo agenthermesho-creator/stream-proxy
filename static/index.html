@@ -25,8 +25,10 @@
 </div>
 <script src="https://vjs.zencdn.net/8.16.1/video.min.js"></script>
 <script>
+// Current embed ID (changes per match - update when stream rotates)
+var EMBED_ID = '52069';
 // The master playlist URL — proxied through our server
-var PLAYLIST = '/proxy?url=' + encodeURIComponent('https://chatgpt.hereisman.net/playlist/52063/load-playlist');
+var PLAYLIST = '/proxy?url=' + encodeURIComponent('https://chatgpt.hereisman.net/playlist/' + EMBED_ID + '/load-playlist');
 
 videojs('video', {
   liveui: true,
