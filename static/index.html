@@ -15,10 +15,16 @@
     background: #e00; color: #fff; font: bold 11px system-ui;
     padding: 4px 10px; border-radius: 3px; letter-spacing: 0.5px;
   }
+  .status {
+    position: fixed; top: 12px; right: 12px; z-index: 99;
+    background: #333; color: #aaa; font: 10px monospace;
+    padding: 4px 8px; border-radius: 3px;
+  }
 </style>
 </head>
 <body>
 <div class="badge">● LIVE</div>
+<div class="status" id="status">initializing…</div>
 <div class="wrap">
   <video id="video" class="video-js vjs-default-skin vjs-big-play-centered"
          controls autoplay muted playsinline></video>
@@ -30,18 +36,98 @@ var EMBED_ID = '52090';
 // The master playlist URL — proxied through our server
 var PLAYLIST = '/proxy?url=' + encodeURIComponent('https://chatgpt.hereisman.net/playlist/' + EMBED_ID + '/load-playlist');
 
-videojs('video', {
+function setStatus(msg) {
+  var el = document.getElementById('status');
+  if (el) el.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+}
+
+var player = videojs('video', {
   liveui: true,
   html5: {
     hls: {
       overrideNative: true,
       enableLowLatency: true,
       smoothQualityChange: true,
-      handlePartialData: true
+      handlePartialData: true,
+      // Aggressive retry for signed URL expiry (5-min TTL)
+      fragLoadingMaxRetry: 20,
+      fragLoadingRetryDelay: 1000,
+      fragLoadingMaxRetryTimeout: 30000,
+      manifestLoadingMaxRetry: 10,
+      manifestLoadingRetryDelay: 1000,
+      levelLoadingMaxRetry: 10,
+      levelLoadingRetryDelay: 1000,
+      // Live edge handling
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDuration: 30,
+      liveDurationInfinity: true,
+      // Buffer config
+      maxBufferLength: 30,
+      maxBufferSize: 60 * 1000 * 1000,
+      maxMaxBufferLength: 60,
+      // Recovery
+      hlsRecoverAttempts: 10,
+      hlsRecoverMaxRetry: 5,
+      appendErrorMaxRetry: 5
     }
   },
   sources: [{ src: PLAYLIST, type: 'application/x-mpegURL' }]
 });
+
+// Error recovery
+var retryCount = 0;
+var maxRetries = 5;
+
+function recover() {
+  if (retryCount >= maxRetries) {
+    setStatus('max retries — refresh page');
+    return;
+  }
+  retryCount++;
+  setStatus('recovering… (' + retryCount + '/' + maxRetries + ')');
+  player.src({ src: PLAYLIST, type: 'application/x-mpegURL' });
+  player.play().catch(function() {});
+}
+
+player.on('error', function() {
+  var err = player.error();
+  setStatus('error: ' + (err && err.code ? err.code : 'unknown'));
+  setTimeout(recover, 2000);
+});
+
+player.on('stalled', function() {
+  setStatus('stalled');
+  setTimeout(function() {
+    if (player.paused()) {
+      recover();
+    }
+  }, 5000);
+});
+
+player.on('ended', function() {
+  setStatus('ended — restarting');
+  setTimeout(recover, 1000);
+});
+
+player.on('waiting', function() {
+  setStatus('buffering…');
+});
+
+player.on('playing', function() {
+  if (retryCount > 0) {
+    retryCount = 0;
+    setStatus('playing');
+  }
+});
+
+// Periodic manifest refresh to pick up new segments (signed URLs rotate)
+setInterval(function() {
+  if (!player.paused() && player.currentTime() > 0) {
+    player.playlistLoader && player.playlistLoader.trigger('dispose');
+  }
+}, 60000);
+
+setStatus('loading…');
 </script>
 </body>
 </html>
