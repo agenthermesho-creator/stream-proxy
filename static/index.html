@@ -33,7 +33,6 @@
 <script>
 // Current embed ID (changes per match - update when stream rotates)
 var EMBED_ID = '52090';
-// The master playlist URL — proxied through our server
 var PLAYLIST = '/proxy?url=' + encodeURIComponent('https://chatgpt.hereisman.net/playlist/' + EMBED_ID + '/load-playlist');
 
 function setStatus(msg) {
@@ -50,25 +49,29 @@ var player = videojs('video', {
       smoothQualityChange: true,
       handlePartialData: true,
       // Aggressive retry for signed URL expiry (5-min TTL)
-      fragLoadingMaxRetry: 20,
-      fragLoadingRetryDelay: 1000,
-      fragLoadingMaxRetryTimeout: 30000,
-      manifestLoadingMaxRetry: 10,
-      manifestLoadingRetryDelay: 1000,
-      levelLoadingMaxRetry: 10,
-      levelLoadingRetryDelay: 1000,
-      // Live edge handling
-      liveSyncDurationCount: 3,
-      liveMaxLatencyDuration: 30,
+      fragLoadingMaxRetry: 30,
+      fragLoadingRetryDelay: 500,
+      fragLoadingMaxRetryTimeout: 60000,
+      manifestLoadingMaxRetry: 20,
+      manifestLoadingRetryDelay: 500,
+      levelLoadingMaxRetry: 20,
+      levelLoadingRetryDelay: 500,
+      // Live edge handling - CRITICAL for live streams
+      liveSyncDurationCount: 3,       // sync to 3 segments from live edge
+      liveMaxLatencyDuration: 15,     // if >15s behind, catch up
       liveDurationInfinity: true,
-      // Buffer config
-      maxBufferLength: 30,
-      maxBufferSize: 60 * 1000 * 1000,
-      maxMaxBufferLength: 60,
+      // Buffer - small buffer for low latency
+      maxBufferLength: 15,
+      maxBufferSize: 30 * 1000 * 1000,
+      maxMaxBufferLength: 30,
       // Recovery
-      hlsRecoverAttempts: 10,
-      hlsRecoverMaxRetry: 5,
-      appendErrorMaxRetry: 5
+      hlsRecoverAttempts: 20,
+      hlsRecoverMaxRetry: 10,
+      appendErrorMaxRetry: 10,
+      // Start from live edge
+      startLevel: -1,
+      // Test bandwidth
+      startFragPrefetch: true
     }
   },
   sources: [{ src: PLAYLIST, type: 'application/x-mpegURL' }]
@@ -76,37 +79,39 @@ var player = videojs('video', {
 
 // Error recovery
 var retryCount = 0;
-var maxRetries = 5;
+var maxRetries = 10;
+var lastRecover = 0;
 
-function recover() {
+function recover(reason) {
+  var now = Date.now();
+  if (now - lastRecover < 3000) return; // debounce
   if (retryCount >= maxRetries) {
     setStatus('max retries — refresh page');
     return;
   }
   retryCount++;
-  setStatus('recovering… (' + retryCount + '/' + maxRetries + ')');
-  player.src({ src: PLAYLIST, type: 'application/x-mpegURL' });
+  lastRecover = now;
+  setStatus('recovering: ' + reason + ' (' + retryCount + '/' + maxRetries + ')');
+  player.src({ src: PLAYLIST + '&t=' + Date.now(), type: 'application/x-mpegURL' });
   player.play().catch(function() {});
 }
 
 player.on('error', function() {
   var err = player.error();
   setStatus('error: ' + (err && err.code ? err.code : 'unknown'));
-  setTimeout(recover, 2000);
+  setTimeout(function() { recover('error'); }, 1000);
 });
 
 player.on('stalled', function() {
   setStatus('stalled');
   setTimeout(function() {
-    if (player.paused()) {
-      recover();
-    }
-  }, 5000);
+    if (player.paused()) recover('stalled');
+  }, 3000);
 });
 
 player.on('ended', function() {
   setStatus('ended — restarting');
-  setTimeout(recover, 1000);
+  setTimeout(function() { recover('ended'); }, 500);
 });
 
 player.on('waiting', function() {
@@ -115,17 +120,29 @@ player.on('waiting', function() {
 
 player.on('playing', function() {
   if (retryCount > 0) {
+    setStatus('playing (recovered)');
     retryCount = 0;
+  } else {
     setStatus('playing');
   }
 });
 
-// Periodic manifest refresh to pick up new segments (signed URLs rotate)
-setInterval(function() {
-  if (!player.paused() && player.currentTime() > 0) {
-    player.playlistLoader && player.playlistLoader.trigger('dispose');
+// Force manifest refresh every 3 seconds for live (signed URLs rotate fast)
+var refreshInterval = setInterval(function() {
+  if (player.hls && player.hls.playlistLoader) {
+    player.hls.playlistLoader.tick();
   }
-}, 60000);
+}, 3000);
+
+// Also refresh on quality change / level switch
+player.on('loadedmetadata', function() {
+  setStatus('metadata loaded');
+});
+
+// Cleanup on unload
+window.addEventListener('beforeunload', function() {
+  clearInterval(refreshInterval);
+});
 
 setStatus('loading…');
 </script>
